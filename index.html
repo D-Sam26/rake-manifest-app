@@ -191,6 +191,10 @@ const SIDING_TAGS = {
   'CPHC': 'SECL RAIL', 'BWWL': 'NCL RAIL', 'BCSK': 'NCL RAIL', 'PRPI': 'WCL WASH',
   'GGS': 'WCL RAIL', 'RJCB': 'SECL RAIL', 'KAV': 'WCL WASH', 'DMGM': 'WCL RAIL',
   'DKSK': 'WCL RAIL',
+  // added from the user's live Sheet3 reference tab:
+  'GPCC': 'SECL WASH', 'DSGR': 'SECL WASH', 'PHEC': 'SECL WASH', 'JRGJ': 'SECL RAIL',
+  // 'GPCK' intentionally omitted — appears under both WASH_SECL and SECL_RAIL in the
+  // source sheet; pending clarification before adding.
 };
 
 function groupLines(items) {
@@ -381,12 +385,17 @@ function updateManifest() {
       `IMWB GROSS - <span class="em">*${!isNaN(imwbGross) ? imwbGross.toFixed(2) : '??'}*</span>`,
     ];
   }
+  const today = new Date();
+  const entryDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
+
   lines.push(
     `RR NO. - <span class="em">${extracted.rrNo ?? '??'}</span>`,
     `RR DATE - <span class="em">${extracted.rrDate ?? '??'}</span>`,
     `RR TARE - <span class="em">*${extracted.tareSum.toFixed(2)}*</span>`,
     `RR QTY.- <span class="em">${extracted.actualSum.toFixed(2)}</span>`,
-    `ACCEPTED WT. - <span class="em">*${!isNaN(acceptedWt) ? acceptedWt.toFixed(2) : '??'}*</span>`
+    `ACCEPTED WT. - <span class="em">*${!isNaN(acceptedWt) ? acceptedWt.toFixed(2) : '??'}*</span>`,
+    `IMWB NET WT - <span class="em">${!isNaN(imwbNet) ? imwbNet.toFixed(2) : '??'}</span>`,
+    `DATE - <span class="em">${entryDate}</span>`
   );
   els.manifestText.innerHTML = lines.join('\n');
 }
