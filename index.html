@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
     --slate-950:#15191b; --slate-900:#1b2124; --slate-800:#232a2d;
@@ -142,18 +143,42 @@
     </div>
   </div>
 
+  <div class="stage">
+    <div class="stage-label" id="s5label"><span class="n">5</span> Save to Log</div>
+    <div class="card">
+      <div id="signedOutView">
+        <div class="empty-note" style="padding:6px 0 14px;">Sign in with your Google account to save this rake to the shared team log.</div>
+        <div class="btn-primary" id="signInBtn" style="cursor:pointer;">Sign in with Google</div>
+      </div>
+      <div id="signedInView" style="display:none;">
+        <div class="rowline"><span class="k">Signed in as</span><span class="v ok" id="signedInEmail"></span></div>
+        <div class="btn-primary" id="saveToLogBtn" style="cursor:pointer; margin-top:10px;">Save to Log</div>
+        <div class="status" id="saveStatus"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="assumption">
     Parses the RR PDF's text layer directly — RR No./Date from their fixed-format line, siding from the
     FROM STATION/SIDING code block, company from the SENDER'S NAME field, and wagon table totals summed
     from the per-wagon rows. Wagon count and accepted weight are cross-checked against the PDF's own
     header totals (WGON FRWH / ACTL WGHT) — a mismatch is flagged rather than silently trusted. Requires
-    a text-layer PDF (not a scanned image).
+    a text-layer PDF (not a scanned image). The siding/company tag is looked up live from your Google
+    Sheet's "Siding Reference" tab at save time, not from a copy baked into this app.
   </div>
 
 </div>
 
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// --- Google Sheets integration config ---
+const GOOGLE_CLIENT_ID = '272581770006-b8ju35r5peldmmccb01gc59pj5o0ho61.apps.googleusercontent.com';
+const SPREADSHEET_ID = '1aPvrDkOmmis-3Lv1PyoasZOeA3EmBV9UbnlyWeEurS4';
+const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+let accessToken = null;
+let signedInEmail = null;
+let tokenClient = null;
 
 const els = {
   dropzone: document.getElementById('dropzone'),
@@ -173,6 +198,12 @@ const els = {
   manifestText: document.getElementById('manifestText'),
   copyBtn: document.getElementById('copyBtn'),
   s2label: document.getElementById('s2label'),
+  signedOutView: document.getElementById('signedOutView'),
+  signedInView: document.getElementById('signedInView'),
+  signInBtn: document.getElementById('signInBtn'),
+  signedInEmail: document.getElementById('signedInEmail'),
+  saveToLogBtn: document.getElementById('saveToLogBtn'),
+  saveStatus: document.getElementById('saveStatus'),
 };
 
 let loadedFiles = []; // [{ name, result }] — one per loaded RR PDF; combined for clubbed rakes
@@ -568,6 +599,184 @@ els.copyBtn.addEventListener('click', () => {
     els.copyBtn.classList.add('copied');
     setTimeout(() => { els.copyBtn.textContent = 'Copy'; els.copyBtn.classList.remove('copied'); }, 1500);
   });
+});
+
+// --- Google Sign-In (Google Identity Services token client) ---
+function initGoogleSignIn() {
+  if (typeof google === 'undefined' || !google.accounts) {
+    // GIS script hasn't loaded yet (e.g. loaded offline) — retry shortly.
+    setTimeout(initGoogleSignIn, 500);
+    return;
+  }
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: SHEETS_SCOPE,
+    callback: async (resp) => {
+      if (resp.error) {
+        els.saveStatus.textContent = 'Sign-in failed: ' + resp.error;
+        return;
+      }
+      accessToken = resp.access_token;
+      try {
+        const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: 'Bearer ' + accessToken },
+        });
+        const info = await r.json();
+        signedInEmail = info.email || '(signed in)';
+      } catch (e) {
+        signedInEmail = '(signed in)';
+      }
+      els.signedOutView.style.display = 'none';
+      els.signedInView.style.display = 'block';
+      els.signedInEmail.textContent = signedInEmail;
+    },
+  });
+}
+
+els.signInBtn?.addEventListener('click', () => {
+  if (!tokenClient) { initGoogleSignIn(); setTimeout(() => tokenClient?.requestAccessToken(), 800); return; }
+  tokenClient.requestAccessToken();
+});
+initGoogleSignIn();
+
+// --- Live Siding Reference lookup (fetched from the Sheet at save time; falls back to the
+// built-in SIDING_TAGS list if offline/unreachable, so a save is never blocked by this fetch) ---
+async function fetchLiveSidingTags() {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Siding Reference'!A2:B1000")}`;
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (!r.ok) throw new Error('fetch failed');
+    const data = await r.json();
+    const map = {};
+    (data.values || []).forEach((row) => {
+      if (row[0]) map[row[0].trim().toUpperCase()] = row[1] ? row[1].trim() : '';
+    });
+    return map;
+  } catch (e) {
+    return null; // caller falls back to SIDING_TAGS
+  }
+}
+
+async function fetchMonthlySeqNo(nowDate) {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Rake Log'!B6:B")}`;
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (!r.ok) throw new Error('fetch failed');
+    const data = await r.json();
+    const rows = data.values || [];
+    const y = nowDate.getFullYear(), m = nowDate.getMonth();
+    let count = 0;
+    for (const row of rows) {
+      const v = row[0];
+      if (!v) continue;
+      const d = new Date(v);
+      if (!isNaN(d) && d.getFullYear() === y && d.getMonth() === m) count++;
+    }
+    return count + 1;
+  } catch (e) {
+    return null; // leave blank if we can't determine it
+  }
+}
+
+function toISODate(ddmmyyyy) {
+  if (!ddmmyyyy) return '';
+  const m = ddmmyyyy.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!m) return ddmmyyyy;
+  return `${m[3]}-${m[2]}-${m[1]}`;
+}
+
+els.saveToLogBtn?.addEventListener('click', async () => {
+  const combined = combineExtractions(loadedFiles);
+  if (!combined || !combined.wagonCount) {
+    els.saveStatus.textContent = 'Load a PDF and fill in the weighment values first.';
+    return;
+  }
+
+  els.saveStatus.textContent = 'Saving…';
+  els.saveToLogBtn.style.opacity = '0.6';
+
+  try {
+    const emptyCountRaw = els.emptyCount.value.trim();
+    const emptyCount = parseInt(emptyCountRaw);
+    const hasEmpty = emptyCountRaw !== '' && !isNaN(emptyCount) && emptyCount > 0;
+    const imwbGross = parseFloat(els.imwbGross.value);
+    const emptyWt = parseFloat(els.emptyWt.value);
+    const finalWtNum = hasEmpty ? (imwbGross - emptyWt) : imwbGross;
+    const tareSum = combined.tareSum, actualSum = combined.actualSum;
+    const netWt = finalWtNum - tareSum;
+    const acceptedWt = Math.min(netWt, actualSum);
+    const shortage = actualSum - acceptedWt;
+
+    const now = new Date();
+    const nowSheetStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const todayDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    // Live siding tag lookup — falls back to the built-in list if the Sheet can't be reached.
+    const liveTags = await fetchLiveSidingTags();
+    let senderTag = '';
+    if (combined.multiSiding) {
+      const codes = combined.siding.split('/');
+      const tagsFound = new Set(codes.map((c) => (liveTags ? liveTags[c] : null) ?? SIDING_TAGS[c] ?? '').filter(Boolean));
+      senderTag = tagsFound.size === 1 ? [...tagsFound][0] : '';
+    } else if (combined.siding) {
+      senderTag = (liveTags ? liveTags[combined.siding] : null) ?? SIDING_TAGS[combined.siding] ?? '';
+    }
+
+    const monthlySeq = await fetchMonthlySeqNo(now);
+    const remark = (emptyCount > 0) ? `${String(emptyCount).padStart(2, '0')} BOX EMPTY` : '';
+    const entryId = 'r' + now.getTime().toString(36);
+    const allWagonChecksOk = loadedFiles.every(({ result }) =>
+      (result.wgonFrwh === null || result.wgonFrwh === result.wagonCount) &&
+      (result.actlWghtField === null || Math.abs(result.actlWghtField - result.actualSum) < 0.5)
+    );
+
+    const row = [
+      entryId,                          // A Entry ID
+      nowSheetStr,                      // B Timestamp Entered
+      signedInEmail || '',              // C Entered By
+      '',                               // D Yearly Rake No (manual, filled in later)
+      monthlySeq ?? '',                 // E Monthly Rake No
+      senderTag,                        // F Sender
+      combined.rrNo || '',              // G RR No
+      toISODate(combined.rrDate),       // H RR Date
+      combined.siding || '',            // I Siding
+      todayDateStr,                     // J Arrival Date (= manifest's DATE field)
+      Math.round(actualSum * 100) / 100,// K RR WT
+      isNaN(imwbGross) ? '' : imwbGross,// L IMWB Gross
+      hasEmpty ? emptyCount : '',       // M Empty Wagons
+      hasEmpty ? emptyWt : '',          // N Empty/Brake Van Wt
+      Math.round(finalWtNum * 100) / 100, // O Gross WT
+      Math.round(tareSum * 100) / 100,  // P Tare WT
+      Math.round(netWt * 100) / 100,    // Q Net WT
+      Math.round(acceptedWt * 100) / 100, // R Accepted WT
+      Math.round(shortage * 100) / 100, // S Shortage
+      combined.wagonCount,              // T Total Boxes
+      remark,                           // U Remark
+      '',                                // V Weighment Done On (manual, filled in later)
+      allWagonChecksOk ? 'OK' : 'MISMATCH', // W Wagon Count Check
+      allWagonChecksOk ? 'OK' : 'MISMATCH', // X RR Qty Check
+      loadedFiles.map((f) => f.name).join(' / '), // Y Source PDF Filename
+      'Synced',                         // Z Sync Status
+    ];
+
+    const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Rake Log'!A6:Z")}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    const resp = await fetch(appendUrl, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [row] }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Sheets API error (${resp.status}): ${errText.slice(0, 200)}`);
+    }
+
+    els.saveStatus.textContent = '✓ Saved to the shared log.';
+  } catch (err) {
+    els.saveStatus.textContent = 'Could not save — ' + err.message + '. Check your connection and try again.';
+  } finally {
+    els.saveToLogBtn.style.opacity = '1';
+  }
 });
 
 updateManifest();
