@@ -175,7 +175,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 // --- Google Sheets integration config ---
 const GOOGLE_CLIENT_ID = '272581770006-b8ju35r5peldmmccb01gc59pj5o0ho61.apps.googleusercontent.com';
 const SPREADSHEET_ID = '1aPvrDkOmmis-3Lv1PyoasZOeA3EmBV9UbnlyWeEurS4';
-const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email';
 let accessToken = null;
 let signedInEmail = null;
 let tokenClient = null;
@@ -657,27 +657,6 @@ async function fetchLiveSidingTags() {
   }
 }
 
-async function fetchMonthlySeqNo(nowDate) {
-  try {
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Rake Log'!B6:B")}`;
-    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
-    if (!r.ok) throw new Error('fetch failed');
-    const data = await r.json();
-    const rows = data.values || [];
-    const y = nowDate.getFullYear(), m = nowDate.getMonth();
-    let count = 0;
-    for (const row of rows) {
-      const v = row[0];
-      if (!v) continue;
-      const d = new Date(v);
-      if (!isNaN(d) && d.getFullYear() === y && d.getMonth() === m) count++;
-    }
-    return count + 1;
-  } catch (e) {
-    return null; // leave blank if we can't determine it
-  }
-}
-
 function toISODate(ddmmyyyy) {
   if (!ddmmyyyy) return '';
   const m = ddmmyyyy.match(/^(\d{2})-(\d{2})-(\d{4})$/);
@@ -722,7 +701,7 @@ els.saveToLogBtn?.addEventListener('click', async () => {
       senderTag = (liveTags ? liveTags[combined.siding] : null) ?? SIDING_TAGS[combined.siding] ?? '';
     }
 
-    const monthlySeq = await fetchMonthlySeqNo(now);
+    const monthlySeq = els.seqNo.value.trim(); // taken directly from the manifest's own sequence field
     const remark = (emptyCount > 0) ? `${String(emptyCount).padStart(2, '0')} BOX EMPTY` : '';
     const entryId = 'r' + now.getTime().toString(36);
     const allWagonChecksOk = loadedFiles.every(({ result }) =>
@@ -731,32 +710,32 @@ els.saveToLogBtn?.addEventListener('click', async () => {
     );
 
     const row = [
-      entryId,                          // A Entry ID
-      nowSheetStr,                      // B Timestamp Entered
-      signedInEmail || '',              // C Entered By
-      '',                               // D Yearly Rake No (manual, filled in later)
-      monthlySeq ?? '',                 // E Monthly Rake No
-      senderTag,                        // F Sender
-      combined.rrNo || '',              // G RR No
-      toISODate(combined.rrDate),       // H RR Date
-      combined.siding || '',            // I Siding
-      todayDateStr,                     // J Arrival Date (= manifest's DATE field)
-      Math.round(actualSum * 100) / 100,// K RR WT
-      isNaN(imwbGross) ? '' : imwbGross,// L IMWB Gross
-      hasEmpty ? emptyCount : '',       // M Empty Wagons
-      hasEmpty ? emptyWt : '',          // N Empty/Brake Van Wt
-      Math.round(finalWtNum * 100) / 100, // O Gross WT
-      Math.round(tareSum * 100) / 100,  // P Tare WT
-      Math.round(netWt * 100) / 100,    // Q Net WT
-      Math.round(acceptedWt * 100) / 100, // R Accepted WT
-      Math.round(shortage * 100) / 100, // S Shortage
-      combined.wagonCount,              // T Total Boxes
-      remark,                           // U Remark
-      '',                                // V Weighment Done On (manual, filled in later)
-      allWagonChecksOk ? 'OK' : 'MISMATCH', // W Wagon Count Check
-      allWagonChecksOk ? 'OK' : 'MISMATCH', // X RR Qty Check
-      loadedFiles.map((f) => f.name).join(' / '), // Y Source PDF Filename
-      'Synced',                         // Z Sync Status
+      '',                                // A Yearly Rake No (manual, filled in later)
+      monthlySeq || '',                 // B Monthly Rake No (= manifest's sequence number)
+      senderTag,                        // C Sender
+      combined.rrNo || '',              // D RR No
+      toISODate(combined.rrDate),       // E RR Date
+      combined.siding || '',            // F Siding
+      todayDateStr,                     // G Arrival Date (= manifest's DATE field)
+      Math.round(actualSum * 100) / 100,// H RR WT
+      isNaN(imwbGross) ? '' : imwbGross,// I IMWB Gross
+      hasEmpty ? emptyCount : '',       // J Empty Wagons
+      hasEmpty ? emptyWt : '',          // K Empty/Brake Van Wt
+      Math.round(finalWtNum * 100) / 100, // L Gross WT
+      Math.round(tareSum * 100) / 100,  // M Tare WT
+      Math.round(netWt * 100) / 100,    // N Net WT
+      Math.round(acceptedWt * 100) / 100, // O Accepted WT
+      Math.round(shortage * 100) / 100, // P Shortage
+      combined.wagonCount,              // Q Total Boxes
+      remark,                           // R Remark
+      '',                                // S Weighment Done On (manual, filled in later)
+      allWagonChecksOk ? 'OK' : 'MISMATCH', // T Wagon Count Check
+      allWagonChecksOk ? 'OK' : 'MISMATCH', // U RR Qty Check
+      loadedFiles.map((f) => f.name).join(' / '), // V Source PDF Filename
+      'Synced',                         // W Sync Status
+      entryId,                          // X Entry ID
+      nowSheetStr,                      // Y Timestamp Entered
+      signedInEmail || '',              // Z Entered By
     ];
 
     const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Rake Log'!A6:Z")}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
