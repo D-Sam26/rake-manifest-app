@@ -86,6 +86,9 @@
 
   .empty-note{color:var(--chalk-dim);font-size:12.5px;text-align:center;padding:20px 0;}
   .assumption{margin-top:26px;font-size:11.5px;color:var(--chalk-dim);border-top:1px solid var(--slate-700);padding-top:14px;line-height:1.6;}
+  .navtabs{display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--slate-700);}
+  .navtab{padding:10px 4px;margin-right:20px;font-family:'Oswald',sans-serif;text-transform:uppercase;letter-spacing:1px;font-size:13px;color:var(--chalk-dim);cursor:pointer;border-bottom:2px solid transparent;}
+  .navtab.active{color:var(--amber);border-bottom-color:var(--amber);}
 </style>
 </head>
 <body>
@@ -95,6 +98,13 @@
     <h1>Rake Weighment Manifest</h1>
     <div class="tag">PDF · direct parse</div>
   </header>
+
+  <div class="navtabs">
+    <div class="navtab active" id="tabNewRake">New Rake</div>
+    <div class="navtab" id="tabReceipt">Today's Receipt</div>
+  </div>
+
+  <div id="newRakeView">
 
   <div class="stage">
     <div class="stage-label" id="s1label"><span class="n">1</span> Load RR PDF(s)</div>
@@ -167,6 +177,33 @@
     Sheet's "Siding Reference" tab at save time, not from a copy baked into this app.
   </div>
 
+  </div>
+
+  <div id="receiptView" style="display:none">
+    <div class="stage">
+      <div class="stage-label"><span class="n">★</span> Today's Receipt</div>
+      <div class="card">
+        <div id="receiptSignedOut" style="display:none;">
+          <div class="empty-note" style="padding:6px 0 14px;">Sign in with your Google account to view today's receipt.</div>
+          <div class="btn-primary" id="receiptSignInBtn" style="cursor:pointer;">Sign in with Google</div>
+        </div>
+        <div id="receiptLoaded">
+          <div class="manifest" id="receiptManifest" style="display:none;">
+            <pre id="receiptText"></pre>
+            <button class="copybtn" id="receiptCopyBtn">Copy</button>
+            <button class="btn-ghost" id="receiptRefreshBtn" style="margin-top:10px; margin-left:10px; cursor:pointer; display:inline-block;">Refresh</button>
+          </div>
+          <div class="empty-note" id="receiptEmptyNote">Loading…</div>
+        </div>
+      </div>
+      <div class="assumption">
+        Reads every rake saved to the log whose Arrival Date is today, groups by Sender tag, and sums
+        Accepted WT per group — automatically refreshes after each save, and starts clean the moment
+        the date rolls over since it's always computed live for "today," never stored.
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -204,6 +241,18 @@ const els = {
   signedInEmail: document.getElementById('signedInEmail'),
   saveToLogBtn: document.getElementById('saveToLogBtn'),
   saveStatus: document.getElementById('saveStatus'),
+  tabNewRake: document.getElementById('tabNewRake'),
+  tabReceipt: document.getElementById('tabReceipt'),
+  newRakeView: document.getElementById('newRakeView'),
+  receiptView: document.getElementById('receiptView'),
+  receiptSignedOut: document.getElementById('receiptSignedOut'),
+  receiptSignInBtn: document.getElementById('receiptSignInBtn'),
+  receiptLoaded: document.getElementById('receiptLoaded'),
+  receiptManifest: document.getElementById('receiptManifest'),
+  receiptText: document.getElementById('receiptText'),
+  receiptCopyBtn: document.getElementById('receiptCopyBtn'),
+  receiptRefreshBtn: document.getElementById('receiptRefreshBtn'),
+  receiptEmptyNote: document.getElementById('receiptEmptyNote'),
 };
 
 let loadedFiles = []; // [{ name, result }] — one per loaded RR PDF; combined for clubbed rakes
@@ -629,6 +678,7 @@ function initGoogleSignIn() {
       els.signedOutView.style.display = 'none';
       els.signedInView.style.display = 'block';
       els.signedInEmail.textContent = signedInEmail;
+      fetchAndRenderReceipt();
     },
   });
 }
@@ -751,11 +801,130 @@ els.saveToLogBtn?.addEventListener('click', async () => {
     }
 
     els.saveStatus.textContent = '✓ Saved to the shared log.';
+    fetchAndRenderReceipt(); // keep the receipt page current whether or not it's the active tab
   } catch (err) {
     els.saveStatus.textContent = 'Could not save — ' + err.message + '. Check your connection and try again.';
   } finally {
     els.saveToLogBtn.style.opacity = '1';
   }
+});
+
+// --- Today's Receipt ---
+// Fixed order the categories are always shown in, with a blank line where the template has one.
+// Display labels use hyphens ("WCL-RAIL") though the Sender column stores them with spaces ("WCL RAIL").
+const RECEIPT_CATEGORIES = ['WCL RAIL', 'WCL WASH', null, 'SECL RAIL', 'SECL RCR', 'SECL WASH', null, 'NCL RAIL'];
+
+function sheetSerialToDate(serial) {
+  // Google Sheets date serials are days since 1899-12-30 (its epoch, not Unix epoch).
+  return new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000);
+}
+
+function isSameLocalDay(d, ref) {
+  return d.getUTCFullYear() === ref.getFullYear() && d.getUTCMonth() === ref.getMonth() && d.getUTCDate() === ref.getDate();
+}
+
+async function fetchAndRenderReceipt() {
+  if (!els.receiptView) return;
+  if (!accessToken) {
+    els.receiptSignedOut.style.display = 'block';
+    els.receiptLoaded.style.display = 'none';
+    return;
+  }
+  els.receiptSignedOut.style.display = 'none';
+  els.receiptLoaded.style.display = 'block';
+  els.receiptManifest.style.display = 'none';
+  els.receiptEmptyNote.style.display = 'block';
+  els.receiptEmptyNote.textContent = 'Loading…';
+
+  try {
+    // Sender = column C, Arrival Date = column G, Accepted WT = column O.
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Rake Log'!C6:O")}?valueRenderOption=UNFORMATTED_VALUE`;
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (!r.ok) throw new Error(`Sheets API error (${r.status})`);
+    const data = await r.json();
+    const rows = data.values || [];
+
+    const today = new Date();
+    const totals = {}; // tag -> { count, sum }
+    let unrecognizedCount = 0;
+
+    for (const row of rows) {
+      const sender = row[0];
+      const arrivalSerial = row[4];
+      const acceptedWt = row[12];
+      if (arrivalSerial === undefined || arrivalSerial === null || arrivalSerial === '') continue;
+      const arrivalDate = sheetSerialToDate(arrivalSerial);
+      if (!isSameLocalDay(arrivalDate, today)) continue;
+
+      const wt = typeof acceptedWt === 'number' ? acceptedWt : parseFloat(acceptedWt) || 0;
+      if (sender && RECEIPT_CATEGORIES.includes(sender)) {
+        if (!totals[sender]) totals[sender] = { count: 0, sum: 0 };
+        totals[sender].count++;
+        totals[sender].sum += wt;
+      } else {
+        unrecognizedCount++;
+      }
+    }
+
+    const dateStr = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
+    let grandTotal = 0;
+    const lines = ['SSTPP KHANDWA', `Receipt on ${dateStr}`, ''];
+    for (const cat of RECEIPT_CATEGORIES) {
+      if (cat === null) { lines.push(''); continue; }
+      const label = cat.replace(' ', '-');
+      const t = totals[cat];
+      const count = String(t ? t.count : 0).padStart(2, '0');
+      if (t && t.count > 0) {
+        const sum = Math.round(t.sum * 100) / 100;
+        grandTotal += sum;
+        lines.push(`${label} - (${count}) - ${sum.toFixed(2)}`);
+      } else {
+        lines.push(`${label} - (${count}) - NIL`);
+      }
+    }
+    lines.push('-----------------------------------------------');
+    lines.push(`Today receipt - *${(Math.round(grandTotal * 100) / 100).toFixed(2)}* MT`);
+    lines.push('');
+    lines.push('EE(CTD)');
+    lines.push('SSTPP');
+    if (unrecognizedCount > 0) {
+      lines.push('');
+      lines.push(`(note: ${unrecognizedCount} rake(s) today have an unrecognized/blank Sender tag and are not included above — check the log)`);
+    }
+
+    els.receiptText.textContent = lines.join('\n');
+    els.receiptManifest.style.display = 'block';
+    els.receiptEmptyNote.style.display = 'none';
+  } catch (err) {
+    els.receiptEmptyNote.textContent = 'Could not load — ' + err.message;
+    els.receiptEmptyNote.style.display = 'block';
+    els.receiptManifest.style.display = 'none';
+  }
+}
+
+els.tabNewRake?.addEventListener('click', () => {
+  els.tabNewRake.classList.add('active');
+  els.tabReceipt.classList.remove('active');
+  els.newRakeView.style.display = 'block';
+  els.receiptView.style.display = 'none';
+});
+els.tabReceipt?.addEventListener('click', () => {
+  els.tabReceipt.classList.add('active');
+  els.tabNewRake.classList.remove('active');
+  els.newRakeView.style.display = 'none';
+  els.receiptView.style.display = 'block';
+  fetchAndRenderReceipt();
+});
+els.receiptSignInBtn?.addEventListener('click', () => {
+  if (!tokenClient) { initGoogleSignIn(); setTimeout(() => tokenClient?.requestAccessToken(), 800); return; }
+  tokenClient.requestAccessToken();
+});
+els.receiptRefreshBtn?.addEventListener('click', fetchAndRenderReceipt);
+els.receiptCopyBtn?.addEventListener('click', () => {
+  navigator.clipboard.writeText(els.receiptText.textContent).then(() => {
+    els.receiptCopyBtn.textContent = 'Copied';
+    setTimeout(() => { els.receiptCopyBtn.textContent = 'Copy'; }, 1500);
+  });
 });
 
 updateManifest();
