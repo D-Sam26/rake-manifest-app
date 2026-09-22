@@ -135,11 +135,11 @@
     <div class="card">
       <div class="grid2">
         <div class="field"><label for="seqNo">Rake sequence no. (this month)</label><input type="number" id="seqNo" placeholder="e.g. 141"></div>
-        <div class="field"><label for="emptyCount">Empty wagons / brake van count</label><input type="number" id="emptyCount" placeholder="e.g. 2"></div>
+        <div class="field"><label for="emptyCount">Empty wagons count</label><input type="number" id="emptyCount" placeholder="e.g. 2"></div>
         <div class="field"><label for="imwbGross">IMWB gross weight (t)</label><input type="number" step="0.01" id="imwbGross" placeholder="e.g. 5103.40"></div>
-        <div class="field"><label for="emptyWt">Empty / brake van weight (t)</label><input type="number" step="0.01" id="emptyWt" placeholder="e.g. 43.20"></div>
+        <div class="field"><label for="emptyWt">Empty wagons weight (t)</label><input type="number" step="0.01" id="emptyWt" placeholder="e.g. 43.20"></div>
       </div>
-      <div class="hint">Leave "Empty wagons" blank or 0 if the rake had none — the manifest then uses IMWB Gross directly with no subtraction. Otherwise Final IMWB Wt. = IMWB Gross &minus; Empty/Brake Van Wt., calculated live.</div>
+      <div class="hint">Leave "Empty wagons" blank or 0 if the rake had none — the manifest then uses IMWB Gross directly with no subtraction. Otherwise Final IMWB Wt. = IMWB Gross &minus; Empty Wagons Wt., calculated live.</div>
     </div>
   </div>
 
@@ -807,7 +807,7 @@ els.saveToLogBtn?.addEventListener('click', async () => {
       Math.round(actualSum * 100) / 100,// H RR WT
       isNaN(imwbGross) ? '' : imwbGross,// I IMWB Gross
       hasEmpty ? emptyCount : '',       // J Empty Wagons
-      hasEmpty ? emptyWt : '',          // K Empty/Brake Van Wt
+      hasEmpty ? emptyWt : '',          // K Empty Wagons Wt
       Math.round(finalWtNum * 100) / 100, // L Gross WT
       Math.round(tareSum * 100) / 100,  // M Tare WT
       Math.round(netWt * 100) / 100,    // N Net WT
