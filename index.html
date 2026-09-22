@@ -102,6 +102,7 @@
   <div class="navtabs">
     <div class="navtab active" id="tabNewRake">New Rake</div>
     <div class="navtab" id="tabReceipt">Today's Receipt</div>
+    <div class="navtab" id="tabAccepted">Accepted Wt List</div>
   </div>
 
   <div id="newRakeView">
@@ -204,6 +205,31 @@
     </div>
   </div>
 
+  <div id="acceptedView" style="display:none">
+    <div class="stage">
+      <div class="stage-label"><span class="n">★</span> Accepted Wt List</div>
+      <div class="card">
+        <div id="acceptedSignedOut" style="display:none;">
+          <div class="empty-note" style="padding:6px 0 14px;">Sign in with your Google account to view today's accepted weights.</div>
+          <div class="btn-primary" id="acceptedSignInBtn" style="cursor:pointer;">Sign in with Google</div>
+        </div>
+        <div id="acceptedLoaded">
+          <div class="manifest" id="acceptedManifest" style="display:none;">
+            <pre id="acceptedText"></pre>
+            <button class="copybtn" id="acceptedCopyBtn">Copy</button>
+            <button class="btn-ghost" id="acceptedRefreshBtn" style="margin-top:10px; margin-left:10px; cursor:pointer; display:inline-block;">Refresh</button>
+          </div>
+          <div class="empty-note" id="acceptedEmptyNote">Loading…</div>
+        </div>
+      </div>
+      <div class="assumption">
+        Lists every rake saved to the log whose Arrival Date is today, in Monthly Rake No order, with its
+        Accepted WT — refreshes after each save and starts clean when the date rolls over, since it's
+        always computed live for "today," never stored.
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -253,6 +279,16 @@ const els = {
   receiptCopyBtn: document.getElementById('receiptCopyBtn'),
   receiptRefreshBtn: document.getElementById('receiptRefreshBtn'),
   receiptEmptyNote: document.getElementById('receiptEmptyNote'),
+  tabAccepted: document.getElementById('tabAccepted'),
+  acceptedView: document.getElementById('acceptedView'),
+  acceptedSignedOut: document.getElementById('acceptedSignedOut'),
+  acceptedSignInBtn: document.getElementById('acceptedSignInBtn'),
+  acceptedLoaded: document.getElementById('acceptedLoaded'),
+  acceptedManifest: document.getElementById('acceptedManifest'),
+  acceptedText: document.getElementById('acceptedText'),
+  acceptedCopyBtn: document.getElementById('acceptedCopyBtn'),
+  acceptedRefreshBtn: document.getElementById('acceptedRefreshBtn'),
+  acceptedEmptyNote: document.getElementById('acceptedEmptyNote'),
 };
 
 let loadedFiles = []; // [{ name, result }] — one per loaded RR PDF; combined for clubbed rakes
@@ -679,6 +715,7 @@ function initGoogleSignIn() {
       els.signedInView.style.display = 'block';
       els.signedInEmail.textContent = signedInEmail;
       fetchAndRenderReceipt();
+      fetchAndRenderAccepted();
     },
   });
 }
@@ -802,6 +839,7 @@ els.saveToLogBtn?.addEventListener('click', async () => {
 
     els.saveStatus.textContent = '✓ Saved to the shared log.';
     fetchAndRenderReceipt(); // keep the receipt page current whether or not it's the active tab
+    fetchAndRenderAccepted(); // same for the accepted wt list
   } catch (err) {
     els.saveStatus.textContent = 'Could not save — ' + err.message + '. Check your connection and try again.';
   } finally {
@@ -902,18 +940,90 @@ async function fetchAndRenderReceipt() {
   }
 }
 
-els.tabNewRake?.addEventListener('click', () => {
-  els.tabNewRake.classList.add('active');
-  els.tabReceipt.classList.remove('active');
-  els.newRakeView.style.display = 'block';
-  els.receiptView.style.display = 'none';
+// --- Accepted Wt List ---
+// One line per rake received today, ordered by Monthly Rake No: "Rake <no> accept wt <wt>".
+async function fetchAndRenderAccepted() {
+  if (!els.acceptedView) return;
+  if (!accessToken) {
+    els.acceptedSignedOut.style.display = 'block';
+    els.acceptedLoaded.style.display = 'none';
+    return;
+  }
+  els.acceptedSignedOut.style.display = 'none';
+  els.acceptedLoaded.style.display = 'block';
+  els.acceptedManifest.style.display = 'none';
+  els.acceptedEmptyNote.style.display = 'block';
+  els.acceptedEmptyNote.textContent = 'Loading…';
+
+  try {
+    // Monthly Rake No = column B, Arrival Date = column G, Accepted WT = column O.
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent("'Rake Log'!B6:O")}?valueRenderOption=UNFORMATTED_VALUE`;
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (!r.ok) throw new Error(`Sheets API error (${r.status})`);
+    const data = await r.json();
+    const rows = data.values || [];
+
+    const today = new Date();
+    const entries = [];
+    for (const row of rows) {
+      const seq = row[0];
+      const arrivalSerial = row[5];
+      const acceptedWt = row[13];
+      if (arrivalSerial === undefined || arrivalSerial === null || arrivalSerial === '') continue;
+      if (!isSameLocalDay(sheetSerialToDate(arrivalSerial), today)) continue;
+      const wt = typeof acceptedWt === 'number' ? acceptedWt : parseFloat(acceptedWt);
+      const seqStr = (seq === undefined || seq === null) ? '' : String(seq).trim();
+      const seqNum = parseFloat(seqStr);
+      entries.push({ seqStr, seqNum: isNaN(seqNum) ? Infinity : seqNum, wt });
+    }
+
+    if (entries.length === 0) {
+      els.acceptedEmptyNote.textContent = 'No rakes received yet today.';
+      els.acceptedEmptyNote.style.display = 'block';
+      els.acceptedManifest.style.display = 'none';
+      return;
+    }
+
+    // Numeric order by Monthly Rake No; rows with a blank/non-numeric number go last, in sheet order.
+    entries.sort((a, b) => a.seqNum - b.seqNum);
+    const lines = entries.map((e) => {
+      const wtStr = isNaN(e.wt) ? '—' : (Math.round(e.wt * 100) / 100).toFixed(2);
+      return `Rake ${e.seqStr || '?'} accept wt ${wtStr}`;
+    });
+
+    els.acceptedText.textContent = lines.join('\n');
+    els.acceptedManifest.style.display = 'block';
+    els.acceptedEmptyNote.style.display = 'none';
+  } catch (err) {
+    els.acceptedEmptyNote.textContent = 'Could not load — ' + err.message;
+    els.acceptedEmptyNote.style.display = 'block';
+    els.acceptedManifest.style.display = 'none';
+  }
+}
+
+function showTab(which) {
+  els.tabNewRake.classList.toggle('active', which === 'new');
+  els.tabReceipt.classList.toggle('active', which === 'receipt');
+  els.tabAccepted.classList.toggle('active', which === 'accepted');
+  els.newRakeView.style.display = which === 'new' ? 'block' : 'none';
+  els.receiptView.style.display = which === 'receipt' ? 'block' : 'none';
+  els.acceptedView.style.display = which === 'accepted' ? 'block' : 'none';
+  if (which === 'receipt') fetchAndRenderReceipt();
+  if (which === 'accepted') fetchAndRenderAccepted();
+}
+els.tabNewRake?.addEventListener('click', () => showTab('new'));
+els.tabReceipt?.addEventListener('click', () => showTab('receipt'));
+els.tabAccepted?.addEventListener('click', () => showTab('accepted'));
+els.acceptedSignInBtn?.addEventListener('click', () => {
+  if (!tokenClient) { initGoogleSignIn(); setTimeout(() => tokenClient?.requestAccessToken(), 800); return; }
+  tokenClient.requestAccessToken();
 });
-els.tabReceipt?.addEventListener('click', () => {
-  els.tabReceipt.classList.add('active');
-  els.tabNewRake.classList.remove('active');
-  els.newRakeView.style.display = 'none';
-  els.receiptView.style.display = 'block';
-  fetchAndRenderReceipt();
+els.acceptedRefreshBtn?.addEventListener('click', fetchAndRenderAccepted);
+els.acceptedCopyBtn?.addEventListener('click', () => {
+  navigator.clipboard.writeText(els.acceptedText.textContent).then(() => {
+    els.acceptedCopyBtn.textContent = 'Copied';
+    setTimeout(() => { els.acceptedCopyBtn.textContent = 'Copy'; }, 1500);
+  });
 });
 els.receiptSignInBtn?.addEventListener('click', () => {
   if (!tokenClient) { initGoogleSignIn(); setTimeout(() => tokenClient?.requestAccessToken(), 800); return; }

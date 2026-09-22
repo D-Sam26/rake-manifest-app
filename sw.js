@@ -3,7 +3,7 @@
 // network update (stale-while-revalidate) so the app still works with
 // zero signal at the weighbridge, but picks up updates when online.
 
-const CACHE_VERSION = 'rake-manifest-v1';
+const CACHE_VERSION = 'rake-manifest-v2';
 
 const PRECACHE_URLS = [
   './',
